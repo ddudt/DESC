@@ -1,7 +1,7 @@
 import numpy as np
 from termcolor import colored
 from desc.backend import jnp
-from .derivative import SVDJacobian
+from desc.utils import Timer
 from .utils import (
     check_termination,
     OptimizeResult,
@@ -102,6 +102,7 @@ def lsqtr(
     nfev = 0
     njev = 0
     iteration = 0
+    timer = Timer()
 
     n = x0.size
     x = x0.copy()
@@ -109,9 +110,13 @@ def lsqtr(
     m = f.size
     nfev += 1
     cost = 0.5 * jnp.dot(f, f)
+    timer.start("jac")
     J = jac(x, *args)
     njev += 1
-    g = jnp.dot(J.T, f)
+    g = jnp.dot(J.T, f).block_until_ready()
+    timer.stop("jac")
+    if verbose > 2:
+        timer.disp("jac")
 
     if maxiter is None:
         maxiter = n * 100
@@ -178,14 +183,19 @@ def lsqtr(
 
         g_h = g * scale
         J_h = J * scale
+        timer.start("svd")
         U, s, Vt = jnp.linalg.svd(J_h, full_matrices=False)
-
+        _ = U.dot(s).block_until_ready()  # dummy operation to get accurate timing data
+        timer.stop("svd")
+        if verbose > 2:
+            timer.disp("svd")
         actual_reduction = -1
         while actual_reduction <= 0 and nfev < max_nfev:
             # Solve the sub-problem.
             # This gives us the proposed step relative to the current position
             # and it tells us whether the proposed step
             # has reached the trust region boundary or not.
+            timer.start("tr_step")
             try:
                 step_h, hits_boundary, alpha = trust_region_step_exact(
                     n, m, f, U, s, Vt.T, trust_radius, alpha
@@ -194,9 +204,14 @@ def lsqtr(
                 success = (False,)
                 message = (status_messages["err"],)
                 break
+            timer.stop("tr_step")
+            if verbose > 2:
+                timer.disp("tr_step")
+
             step_h_norm = np.linalg.norm(step_h, ord=xnorm_ord)
             # geodesic acceleration
             if ga_tr_ratio > 0:
+                timer.start("ga_step")
                 f0 = f
                 f1 = fun(x + ga_fd_step * step_h * scale, *args)
                 nfev += 1
@@ -206,6 +221,9 @@ def lsqtr(
                     n, m, RHS, U, s, Vt.T, ga_tr_ratio * step_h_norm, alpha
                 )
                 step_h += ga_step_h
+                timer.stop("ga_step")
+                if verbose > 2:
+                    timer.disp("ga_step")
 
             # calculate the predicted value at the proposed point
             predicted_reduction = -evaluate_quadratic(J_h, g_h, step_h)
@@ -271,9 +289,13 @@ def lsqtr(
             f_old = f
             f = f_new
             cost = cost_new
+            timer.start("jac")
             J = jac(x, *args)
             njev += 1
-            g = jnp.dot(J.T, f)
+            g = jnp.dot(J.T, f).block_until_ready()
+            timer.stop("jac")
+            if verbose > 2:
+                timer.disp("jac")
             x_norm = np.linalg.norm(x, ord=xnorm_ord)
 
             if jac_scale:
