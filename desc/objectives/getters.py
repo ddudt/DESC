@@ -157,6 +157,7 @@ def get_NAE_constraints(
     normalize=True,
     N=None,
     fix_lambda=False,
+    threshold=0,
 ):
     """Get the constraints necessary for fixing NAE behavior in an equilibrium problem.
 
@@ -180,6 +181,9 @@ def get_NAE_constraints(
         Whether to constrain lambda to match that of the NAE near-axis
         if an `int`, fixes lambda up to that order in rho {0,1}
         if `True`, fixes lambda up to the specified order given by `order`
+    threshold : float, default 0
+        minimum magnitude of NAE coefficient to keep. NAE Fourier amplitudes
+        below this value will be ignored.
 
     Returns
     -------
@@ -208,7 +212,11 @@ def get_NAE_constraints(
         constraints += L_axis_constraints
     if order >= 1:  # first order constraints
         constraints += make_RZ_cons_1st_order(
-            qsc=qsc_eq, desc_eq=desc_eq, N=N, fix_lambda=fix_lambda and fix_lambda > 0
+            qsc=qsc_eq,
+            desc_eq=desc_eq,
+            N=N,
+            fix_lambda=fix_lambda and fix_lambda > 0,
+            threshold=threshold,
         )
     if order >= 2:  # 2nd order constraints
         raise NotImplementedError("NAE constraints only implemented up to O(rho) ")

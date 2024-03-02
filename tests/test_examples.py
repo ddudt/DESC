@@ -626,8 +626,7 @@ def test_NAE_QSC_solve():
 def test_NAE_QIC_solve():
     """Test O(rho) NAE QIC constraints solve."""
     # get Qic example
-    qic = Qic.from_paper("QI NFP2 r2", nphi=301, order="r1")
-    qic.lasym = False  # don't need to consider stellarator asym for order 1 constraints
+    qic = Qic.from_paper("QI NFP2 r2", nphi=301, order="r2")
     ntheta = 75
     r = 0.01
     N = 11
@@ -669,58 +668,19 @@ def test_NAE_QIC_solve():
     np.testing.assert_allclose(iota[1:10], qic.iota, atol=5e-4)
 
     # check lambda to match near axis
-    grid_2d_05 = LinearGrid(rho=np.array(1e-6), M=50, N=50, NFP=eq.NFP, endpoint=True)
+    grid_axis = LinearGrid(rho=np.array(0), N=100, NFP=eq.NFP, theta=np.array(0))
 
     # Evaluate lambda near the axis
-    data_nae = eq.compute("lambda", grid=grid_2d_05)
+    data_nae = eq.compute(["|B|", "lambda"], grid=grid_axis)
     lam_nae = data_nae["lambda"]
+    B_nae = data_nae["|B|"]
 
-    # Reshape to form grids on theta and phi
-    zeta = (
-        grid_2d_05.nodes[:, 2]
-        .reshape(
-            (grid_2d_05.num_theta, grid_2d_05.num_rho, grid_2d_05.num_zeta), order="F"
-        )
-        .squeeze()
-    )
+    phi = grid_axis.nodes[:, 2]
 
-    lam_nae = lam_nae.reshape(
-        (grid_2d_05.num_theta, grid_2d_05.num_rho, grid_2d_05.num_zeta), order="F"
-    )
-
-    phi = np.squeeze(zeta[0, :])
-    lam_nae = np.squeeze(lam_nae[:, 0, :])
-
-    lam_av_nae = np.mean(lam_nae, axis=0)
-    np.testing.assert_allclose(
-        lam_av_nae, -qic.iota * qic.nu_spline(phi), atol=1e-4, rtol=1e-2
-    )
+    np.testing.assert_allclose(lam_nae, -qic.iota * qic.nu_spline(phi), rtol=1e-5)
 
     # check |B| on axis
-
-    grid = LinearGrid(M=eq.M_grid, N=eq.N_grid, NFP=eq.NFP, rho=np.array(1e-6))
-    # Evaluate B modes near the axis
-    data_nae = eq.compute(["|B|_mn", "B modes"], grid=grid)
-    modes = data_nae["B modes"]
-    B_mn_nae = data_nae["|B|_mn"]
-    # Evaluate B on an angular grid
-    theta = np.linspace(0, 2 * np.pi, 150)
-    phi = np.linspace(0, 2 * np.pi, qic.nphi)
-    th, ph = np.meshgrid(theta, phi)
-    B_nae = np.zeros((qic.nphi, 150))
-
-    for i, (l, m, n) in enumerate(modes):
-        if m >= 0 and n >= 0:
-            B_nae += B_mn_nae[i] * np.cos(m * th) * np.cos(n * ph)
-        elif m >= 0 > n:
-            B_nae += -B_mn_nae[i] * np.cos(m * th) * np.sin(n * ph)
-        elif m < 0 <= n:
-            B_nae += -B_mn_nae[i] * np.sin(m * th) * np.cos(n * ph)
-        elif m < 0 and n < 0:
-            B_nae += B_mn_nae[i] * np.sin(m * th) * np.sin(n * ph)
-    # Eliminate the poloidal angle to focus on the toroidal behavior
-    B_av_nae = np.mean(B_nae, axis=1)
-    np.testing.assert_allclose(B_av_nae, np.ones(np.size(phi)) * qic.B0, atol=2e-2)
+    np.testing.assert_allclose(B_nae, np.ones(np.size(phi)) * qic.B0, rtol=1e-5)
 
 
 @pytest.mark.unit
