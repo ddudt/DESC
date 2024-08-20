@@ -1674,6 +1674,9 @@ class SurfaceCurrentRegularization(_Objective):
         if verbose > 1:
             timer.disp("Precomputing transforms")
 
+        if self._normalize:
+            self._normalization = 4e6
+
         super().build(use_jit=use_jit, verbose=verbose)
 
     def compute(self, surface_params=None, constants=None):
