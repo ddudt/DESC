@@ -16,7 +16,14 @@ from desc.backend import (
     tree_unstack,
     vmap,
 )
-from desc.compute import get_params, rpz2xyz, rpz2xyz_vec, xyz2rpz, xyz2rpz_vec
+from desc.compute import (
+    get_params,
+    get_transforms,
+    rpz2xyz,
+    rpz2xyz_vec,
+    xyz2rpz,
+    xyz2rpz_vec,
+)
 from desc.compute.geom_utils import reflection_matrix
 from desc.compute.utils import _compute as compute_fun
 from desc.compute.utils import safenorm
@@ -2338,3 +2345,110 @@ class MixedCoilSet(CoilSet):
         if ignore_groups:
             cset = cls(*flatten_coils(cset))
         return cset
+
+
+class TheaCoilSet(CoilSet):
+    """Array of planar coils on a surface.
+
+    Parameters
+    ----------
+    surf : FourierRZToroidalSurface
+        Surface that coils are arranged on.
+    rows : int, optional
+        Number of rows of coils.
+    cols : int, optional
+        Number of columns of coils.
+    current : float, optional
+        Current in the coils.
+    r_n : array, optional
+        Radius of planar coils. Default based on surf, rows, cols geometry.
+
+    """
+
+    _io_attrs_ = CoilSet._io_attrs_
+
+    def __init__(
+        self,
+        surf,
+        rows=10,
+        cols=10,
+        current=1,
+        r_n=None,
+    ):
+        self._surf = surf
+        self._rows = rows
+        self._cols = cols
+
+        self._data_keys = ["x", "n_rho"]
+        self._grid = LinearGrid(
+            rho=np.array([1.0]),
+            theta=rows,
+            zeta=cols * (int(self._surf.sym) + 1),
+            endpoint=False,
+            NFP=self._surf.NFP,
+            sym=False,
+        )
+        self._transforms = get_transforms(
+            self._data_keys, obj=self._surf, grid=self._grid
+        )
+        keys = self._data_keys + ["R0", "a"] if r_n is None else self._data_keys
+        data = self._surf.compute(keys, grid=self._grid, transforms=self._transforms)
+
+        if r_n is None:
+            r_n = np.pi * np.min(
+                [
+                    data["a"] / self.rows,
+                    data["R0"]
+                    / (self.cols * self._surf.NFP * (int(self._surf.sym) + 1)),
+                ]
+            )
+
+        coils = []
+        for k in range(self._grid.num_nodes):
+            coil = FourierPlanarCoil(
+                current=current,
+                center=data["x"][k, :],
+                normal=data["n_rho"][k, :],
+                r_n=r_n,
+                basis="rpz",
+            )
+            coils.append(coil)
+        super().__init__(
+            coils, NFP=self._surf.NFP, sym=self._surf.sym, check_intersection=False
+        )
+
+    @property
+    def rows(self):
+        """int: Number of rows of coils."""
+        return self._rows
+
+    @rows.setter
+    def rows(self, new):
+        self._rows = new
+        self._grid = LinearGrid(
+            rho=np.array([1.0]),
+            theta=self.rows,
+            zeta=self.cols,
+            endpoint=False,
+            NFP=self.NFP,
+            sym=False,
+        )
+        self._transforms = get_transforms(self._data_keys, obj=self, grid=self._grid)
+
+    @property
+    def cols(self):
+        """int: Number of columns of coils."""
+        return self._rows
+
+    @cols.setter
+    def cols(self, new):
+        self._cols = new
+        self._grid = LinearGrid(
+            rho=np.array([1.0]),
+            theta=self.rows,
+            zeta=self.cols,
+            endpoint=False,
+            NFP=self.NFP,
+            sym=False,
+        )
+        self._transforms = get_transforms(self._data_keys, obj=self, grid=self._grid)
