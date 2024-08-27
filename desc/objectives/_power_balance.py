@@ -26,11 +26,11 @@ class FusionPower(_Objective):
         Equilibrium that will be optimized to satisfy the Objective.
     target : {float, ndarray}, optional
         Target value(s) of the objective. Only used if bounds is None.
-        Must be broadcastable to Objective.dim_f. Defaults to ``target=0``.
+        Must be broadcastable to Objective.dim_f. Defaults to ``target=1e9``.
     bounds : tuple of {float, ndarray}, optional
         Lower and upper bounds on the objective. Overrides target.
         Both bounds must be broadcastable to to Objective.dim_f.
-        Defaults to ``target=0``.
+        Defaults to ``target=1e9``.
     weight : {float, ndarray}, optional
         Weighting to apply to the Objective, relative to other Objectives.
         Must be broadcastable to to Objective.dim_f
@@ -81,7 +81,7 @@ class FusionPower(_Objective):
             fuel not in ["DT"], ValueError, f"fuel must be one of ['DT'], got {fuel}."
         )
         if target is None and bounds is None:
-            target = 0
+            target = 1e9
         self._fuel = fuel
         self._grid = grid
         super().__init__(
@@ -112,6 +112,11 @@ class FusionPower(_Objective):
             eq.electron_density is None,
             ValueError,
             "Equilibrium must have an electron density profile.",
+        )
+        errorif(
+            eq.ion_temperature is None,
+            ValueError,
+            "Equilibrium must have an ion temperature profile.",
         )
         if self._grid is None:
             self._grid = QuadratureGrid(
