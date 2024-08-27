@@ -21,7 +21,12 @@ from ._equilibrium import (
     RadialForceBalance,
 )
 from ._free_boundary import BoundaryError, VacuumBoundaryError
-from ._generic import GenericObjective, LinearObjectiveFromUser, ObjectiveFromUser
+from ._generic import (
+    ExternalObjective,
+    GenericObjective,
+    LinearObjectiveFromUser,
+    ObjectiveFromUser,
+)
 from ._geometry import (
     AspectRatio,
     BScaleLength,
@@ -42,6 +47,7 @@ from ._omnigenity import (
 from ._power_balance import FusionPower, HeatingPowerISS04
 from ._profiles import Pressure, RotationalTransform, Shear, ToroidalCurrent
 from ._stability import MagneticWell, MercierStability
+from ._terpsichore import TERPSICHORE
 from .getters import (
     get_equilibrium_objective,
     get_fixed_axis_constraints,
