@@ -38,12 +38,15 @@ class CurrentPotentialField(_MagneticField, FourierRZToroidalSurface):
         function to compute the zeta derivative of the current potential
     params : dict, optional
         default parameters to pass to potential function (and its derivatives)
-    R_lmn, Z_lmn : array-like, shape(k,)
-        Fourier coefficients for winding surface R and Z in cylindrical coordinates
+    R_lmn, Z_lmn, W_lmn : array-like, shape(k,)
+        Fourier coefficients for winding surface R and Z and omega
+        in cylindrical coordinates
     modes_R : array-like, shape(k,2)
         poloidal and toroidal mode numbers [m,n] for R_lmn.
     modes_Z : array-like, shape(k,2)
         mode numbers associated with Z_lmn, defaults to modes_R
+    modes_W : array-like, shape(k,2)
+        mode numbers associated with W_lmn, defaults to modes_Z
     NFP : int
         number of field periods
     sym : bool
@@ -78,8 +81,10 @@ class CurrentPotentialField(_MagneticField, FourierRZToroidalSurface):
         params=None,
         R_lmn=None,
         Z_lmn=None,
+        W_lmn=None,
         modes_R=None,
         modes_Z=None,
+        modes_W=None,
         NFP=1,
         sym="auto",
         M=None,
@@ -99,8 +104,10 @@ class CurrentPotentialField(_MagneticField, FourierRZToroidalSurface):
         super().__init__(
             R_lmn=R_lmn,
             Z_lmn=Z_lmn,
+            W_lmn=W_lmn,
             modes_R=modes_R,
             modes_Z=modes_Z,
+            modes_W=modes_W,
             NFP=NFP,
             sym=sym,
             M=M,
@@ -252,8 +259,10 @@ class CurrentPotentialField(_MagneticField, FourierRZToroidalSurface):
 
         R_lmn = surface.R_lmn
         Z_lmn = surface.Z_lmn
+        W_lmn = surface.W_lmn
         modes_R = surface._R_basis.modes[:, 1:]
         modes_Z = surface._Z_basis.modes[:, 1:]
+        modes_W = surface._W_basis.modes[:, 1:]
         NFP = surface.NFP
         sym = surface.sym
         name = surface.name
@@ -265,8 +274,10 @@ class CurrentPotentialField(_MagneticField, FourierRZToroidalSurface):
             params,
             R_lmn,
             Z_lmn,
+            W_lmn,
             modes_R,
             modes_Z,
+            modes_W,
             NFP,
             sym,
             name=name,
@@ -319,12 +330,14 @@ class FourierCurrentPotentialField(
     M_Phi, N_Phi: int or None
         Maximum poloidal and toroidal mode numbers for the single valued part of the
         current potential.
-    R_lmn, Z_lmn : array-like, shape(k,)
-        Fourier coefficients for winding surface R and Z in cylindrical coordinates
+    R_lmn, Z_lmn,W_lmn : array-like, shape(k,)
+        Fourier coefficients for winding surface R, Z, omega in cylindrical coordinates
     modes_R : array-like, shape(k,2)
         poloidal and toroidal mode numbers [m,n] for R_lmn.
     modes_Z : array-like, shape(k,2)
         mode numbers associated with Z_lmn, defaults to modes_R
+    modes_W : array-like, shape(k,2)
+        mode numbers associated with W_lmn, defaults to modes_Z
     NFP : int
         number of field periods
     sym : bool
@@ -360,8 +373,10 @@ class FourierCurrentPotentialField(
         N_Phi=None,
         R_lmn=None,
         Z_lmn=None,
+        W_lmn=None,
         modes_R=None,
         modes_Z=None,
+        modes_W=None,
         NFP=1,
         sym="auto",
         M=None,
@@ -392,8 +407,10 @@ class FourierCurrentPotentialField(
         super().__init__(
             R_lmn=R_lmn,
             Z_lmn=Z_lmn,
+            W_lmn=W_lmn,
             modes_R=modes_R,
             modes_Z=modes_Z,
+            modes_W=modes_W,
             NFP=NFP,
             sym=sym,
             M=M,
@@ -586,8 +603,10 @@ class FourierCurrentPotentialField(
             )
         R_lmn = surface.R_lmn
         Z_lmn = surface.Z_lmn
+        W_lmn = surface.W_lmn
         modes_R = surface._R_basis.modes[:, 1:]
         modes_Z = surface._Z_basis.modes[:, 1:]
+        modes_W = surface._W_basis.modes[:, 1:]
         NFP = surface.NFP
         sym = surface.sym
         name = surface.name
@@ -604,8 +623,10 @@ class FourierCurrentPotentialField(
             N_Phi=N_Phi,
             R_lmn=R_lmn,
             Z_lmn=Z_lmn,
+            W_lmn=W_lmn,
             modes_R=modes_R,
             modes_Z=modes_Z,
+            modes_W=modes_W,
             NFP=NFP,
             sym=sym,
             name=name,
