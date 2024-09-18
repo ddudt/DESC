@@ -1,14 +1,25 @@
 """Classes for magnetic fields."""
 
+import functools
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import MutableSequence
 
 import numpy as np
 import scipy.linalg
+from diffrax import (
+    DiscreteTerminatingEvent,
+    ODETerm,
+    PIDController,
+    SaveAt,
+    Tsit5,
+    diffeqsolve,
+)
 from interpax import approx_df, interp1d, interp2d, interp3d
 from netCDF4 import Dataset, chartostring, stringtochar
+from scipy.constants import physical_constants
 
-from desc.backend import fori_loop, jit, jnp, odeint, sign
+from desc.backend import fori_loop, jit, jnp, sign, vmap
 from desc.basis import (
     ChebyshevDoubleFourierBasis,
     ChebyshevPolynomial,
@@ -24,7 +35,15 @@ from desc.integrals import compute_B_plasma
 from desc.io import IOAble
 from desc.optimizable import Optimizable, OptimizableCollection, optimizable_parameter
 from desc.transform import Transform
-from desc.utils import copy_coeffs, errorif, flatten_list, setdefault, warnif
+from desc.utils import (
+    copy_coeffs,
+    cross,
+    dot,
+    errorif,
+    flatten_list,
+    setdefault,
+    warnif,
+)
 from desc.vmec_utils import ptolemy_identity_fwd, ptolemy_identity_rev
 
 
@@ -2175,11 +2194,13 @@ def field_line_integrate(
     rtol=1e-8,
     atol=1e-8,
     maxstep=1000,
+    min_step_size=1e-8,
+    solver=Tsit5(),
     bounds_R=(0, np.inf),
     bounds_Z=(-np.inf, np.inf),
-    decay_accel=1e6,
+    **kwargs,
 ):
-    """Trace field lines by integration.
+    """Trace field lines by integration, using diffrax package.
 
     Parameters
     ----------
@@ -2191,7 +2212,7 @@ def field_line_integrate(
         and the negative toroidal angle for negative Bphi
     field : MagneticField
         source of magnetic field to integrate
-    params: dict
+    params: dict, optional
         parameters passed to field
     source_grid : Grid, optional
         Collocation points used to discretize source field.
@@ -2199,26 +2220,21 @@ def field_line_integrate(
         relative and absolute tolerances for ode integration
     maxstep : int
         maximum number of steps between different phis
+    min_step_size: float
+        minimum step size (in phi) that the integration can take. default is 1e-8
+    solver: diffrax.Solver
+        diffrax Solver object to use in integration,
+        defaults to Tsit5(), a RK45 explicit solver
     bounds_R : tuple of (float,float), optional
-        R bounds for field line integration bounding box.
-        If supplied, the RHS of the field line equations will be
-        multiplied by exp(-r) where r is the distance to the bounding box,
-        this is meant to prevent the field lines which escape to infinity from
-        slowing the integration down by being traced to infinity.
-        defaults to (0,np.inf)
+        R bounds for field line integration bounding box. Trajectories that leave this
+        box will be stopped, and NaN returned for points outside the box.
+        Defaults to (0,np.inf)
     bounds_Z : tuple of (float,float), optional
-        Z bounds for field line integration bounding box.
-        If supplied, the RHS of the field line equations will be
-        multiplied by exp(-r) where r is the distance to the bounding box,
-        this is meant to prevent the field lines which escape to infinity from
-        slowing the integration down by being traced to infinity.
+        Z bounds for field line integration bounding box. Trajectories that leave this
+        box will be stopped, and NaN returned for points outside the box.
         Defaults to (-np.inf,np.inf)
-    decay_accel : float, optional
-        An extra factor to the exponential that decays the RHS, i.e.
-        the RHS is multiplied by exp(-r * decay_accel), this is to
-        accelerate the decay of the RHS and stop the integration sooner
-        after exiting the bounds. Defaults to 1e6
-
+    kwargs: dict
+        keyword arguments to be passed into the ``diffrax.diffeqsolve``
 
     Returns
     -------
@@ -2228,61 +2244,312 @@ def field_line_integrate(
     """
     r0, z0, phis = map(jnp.asarray, (r0, z0, phis))
     assert r0.shape == z0.shape, "r0 and z0 must have the same shape"
-    assert decay_accel > 0, "decay_accel must be positive"
     rshape = r0.shape
     r0 = r0.flatten()
     z0 = z0.flatten()
     x0 = jnp.array([r0, phis[0] * jnp.ones_like(r0), z0]).T
 
     @jit
-    def odefun(rpz, s):
+    def odefun(s, rpz, args):
         rpz = rpz.reshape((3, -1)).T
         r = rpz[:, 0]
-        z = rpz[:, 2]
-        # if bounds are given, will decay the magnetic field line eqn
-        # RHS if the trajectory is outside of bounds to avoid
-        # integrating the field line to infinity, which is costly
-        # and not useful in most cases
-        decay_factor = jnp.where(
-            jnp.array(
-                [
-                    jnp.less(r, bounds_R[0]),
-                    jnp.greater(r, bounds_R[1]),
-                    jnp.less(z, bounds_Z[0]),
-                    jnp.greater(z, bounds_Z[1]),
-                ]
-            ),
-            jnp.array(
-                [
-                    # we multiply by decay_accel to accelerate the decay so that the
-                    # integration is stopped soon after the bounds are exited.
-                    jnp.exp(-(decay_accel * (r - bounds_R[0]) ** 2)),
-                    jnp.exp(-(decay_accel * (r - bounds_R[1]) ** 2)),
-                    jnp.exp(-(decay_accel * (z - bounds_Z[0]) ** 2)),
-                    jnp.exp(-(decay_accel * (z - bounds_Z[1]) ** 2)),
-                ]
-            ),
-            1.0,
-        )
-        # multiply all together, the conditions that are not violated
-        # are just one while the violated ones are continuous decaying exponentials
-        decay_factor = jnp.prod(decay_factor, axis=0)
-
         br, bp, bz = field.compute_magnetic_field(
             rpz, params, basis="rpz", source_grid=source_grid
         ).T
-        return (
-            decay_factor
-            * jnp.array(
-                [r * br / bp * jnp.sign(bp), jnp.sign(bp), r * bz / bp * jnp.sign(bp)]
-            ).squeeze()
-        )
+        return jnp.array(
+            [r * br / bp * jnp.sign(bp), jnp.sign(bp), r * bz / bp * jnp.sign(bp)]
+        ).squeeze()
 
-    intfun = lambda x: odeint(odefun, x, phis, rtol=rtol, atol=atol, mxstep=maxstep)
-    x = jnp.vectorize(intfun, signature="(k)->(n,k)")(x0)
-    r = x[:, :, 0].T.reshape((len(phis), *rshape))
-    z = x[:, :, 2].T.reshape((len(phis), *rshape))
+    # diffrax parameters
+
+    def default_terminating_event_fxn(state, **kwargs):
+        R_out = jnp.any(jnp.array([state.y[0] < bounds_R[0], state.y[0] > bounds_R[1]]))
+        Z_out = jnp.any(jnp.array([state.y[2] < bounds_Z[0], state.y[2] > bounds_Z[1]]))
+        return jnp.any(jnp.array([R_out, Z_out]))
+
+    kwargs.setdefault(
+        "stepsize_controller", PIDController(rtol=rtol, atol=atol, dtmin=min_step_size)
+    )
+    kwargs.setdefault(
+        "discrete_terminating_event",
+        DiscreteTerminatingEvent(default_terminating_event_fxn),
+    )
+
+    term = ODETerm(odefun)
+    saveat = SaveAt(ts=phis)
+
+    intfun = lambda x: diffeqsolve(
+        term,
+        solver,
+        y0=x,
+        t0=phis[0],
+        t1=phis[-1],
+        saveat=saveat,
+        max_steps=maxstep * len(phis),
+        dt0=min_step_size,
+        **kwargs,
+    ).ys
+
+    # suppress warnings till its fixed upstream:
+    # https://github.com/patrick-kidger/diffrax/issues/445
+    # also ignore deprecation warning for now until we actually need to deal with it
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="unhashable type")
+        warnings.filterwarnings("ignore", message="`diffrax.*discrete_terminating")
+        x = jnp.vectorize(intfun, signature="(k)->(n,k)")(x0)
+
+    x = jnp.where(jnp.isinf(x), jnp.nan, x)
+    r = x[:, :, 0].squeeze().T.reshape((len(phis), *rshape))
+    z = x[:, :, 2].squeeze().T.reshape((len(phis), *rshape))
+
     return r, z
+
+
+def trace_particles(
+    x0,
+    lambda0,
+    ts,
+    field,
+    m=4,
+    q=2,
+    E=3.52e6,
+    gyrophase=0.0,
+    mode="gc-vac",
+    params=None,
+    source_grid=None,
+    basis="rpz",
+    rtol=1e-8,
+    atol=1e-8,
+    maxstep=1000,
+    min_step_size=1e-8,
+    solver=Tsit5(),
+    bounds_R=(0, np.inf),
+    bounds_Z=(-np.inf, np.inf),
+    **kwargs,
+):
+    """Trace particles in external magnetic field.
+
+    Parameters
+    ----------
+    x0 : array-like, shape(num_particles,3)
+        Initial starting coordinates for r, phi, z (if basis="rpz")
+        or x, y, z (if basis="xyz")
+    lambda0 : array-like, shape(num_particles,)
+        Initial value for pitch angle parameter λ = v²_⊥ / v²
+    ts : array-like
+        Strictly increasing array of times where output is desired.
+    field : MagneticField
+        Source of magnetic field to integrate
+    m : float or array-like, shape(num_particles,)
+        Mass of particles, in units of proton masses
+    q : float or array-like, shape(num_particles,)
+        Charge of particles, in units of elementary charge.
+    E : float or array-like, shape(num_particles,)
+        Kinetic energy of particles, in eV.
+    gyrophase : float or array-like, shape(num_particles,)
+        Initial gyrophase of particles in [0, 2pi]. Only used if ``mode="full-orbit"``
+    mode : {"gc-vac", "full-orbit"}
+        Set of equations to solve.
+    params: dict, optional
+        Parameters passed to field
+    source_grid : Grid, optional
+        Grid to use to discretize field
+    basis : {"rpz", "xyz"}
+        Whether to use cylindrical or cartesian coordinates.
+    rtol, atol : float
+        relative and absolute tolerances for ode integration
+    maxstep : int
+        maximum number of steps between different output times
+    min_step_size: float
+        minimum step size (in t) that the integration can take. default is 1e-8
+    solver: diffrax.Solver
+        diffrax Solver object to use in integration,
+        defaults to Tsit5(), a RK45 explicit solver
+    bounds_R : tuple of (float,float), optional
+        R bounds for bounding box. Trajectories that leave this box will be stopped,
+        and NaN returned for points outside the box. Defaults to (0,np.inf)
+    bounds_Z : tuple of (float,float), optional
+        Z bounds for bounding box. Trajectories that leave this box will be stopped,
+        and NaN returned for points outside the box. Defaults to (-np.inf,np.inf)
+    kwargs: dict
+        keyword arguments to be passed into the ``diffrax.diffeqsolve``
+
+    Returns
+    -------
+    x : ndarray, shape(num_particles, num_timesteps, 3)
+        Position of each particle at each requested time, in
+        either r,phi,z or x,y,z depending on basis argument.
+    v : ndarray
+        Velocity of each particle at specified times. For ``mode="gc-vac"`` this is
+        the parallel velocity of shape shape(num_particles, num_timesteps, 1), for
+        ``mode="full-orbit"`` this is the velocity vector in whichever basis was
+        specified, of shape(num_particles, num_timesteps, 3).
+
+    """
+    errorif(
+        mode not in ["gc-vac", "full-orbit"],
+        ValueError,
+        f"mode should be one of 'gc-vac' or 'full-orbit', got {mode}",
+    )
+    x0, lambda0, m, q, E = map(jnp.asarray, (x0, lambda0, m, q, E))
+    n_particles = x0.shape[0]
+    lambda0, m, q, E, gyrophase = map(
+        lambda x: jnp.broadcast_to(x, n_particles), (lambda0, m, q, E, gyrophase)
+    )
+
+    @jit
+    def field_compute(x):
+        return field.compute_magnetic_field(
+            jnp.atleast_2d(x), params=params, basis=basis, grid=source_grid
+        ).squeeze()
+
+    m *= physical_constants["proton mass"][0]
+    q *= physical_constants["elementary charge"][0]
+    E *= physical_constants["electron volt"][0]
+
+    modv0 = jnp.sqrt(2 * E / m)  # speed |v|
+    vperp0 = jnp.sqrt(lambda0) * modv0
+    vpar0 = jnp.sqrt(modv0**2 - vperp0**2)
+    B = field_compute(x0)
+
+    if mode == "gc-vac":
+        y0 = jnp.hstack([x0, vpar0[:, None]])
+        modB = jnp.linalg.norm(B, axis=-1)
+        mu = vperp0**2 / (2 * modB)
+        args = (m / q, mu)
+        odefun = functools.partial(
+            _guiding_center_vacuum, field_compute=field_compute, basis=basis
+        )
+    elif mode == "full-orbit":
+        x0, v0 = _full_orbit_ic_from_gc(x0, vpar0, vperp0, B, gyrophase, m, q)
+        y0 = jnp.hstack([x0, v0])
+        args = q / m
+        odefun = functools.partial(_full_orbit, field_compute=field_compute)
+
+    # diffrax parameters
+
+    def default_terminating_event_fxn(state, **kwargs):
+        R_out = jnp.any(jnp.array([state.y[0] < bounds_R[0], state.y[0] > bounds_R[1]]))
+        Z_out = jnp.any(jnp.array([state.y[2] < bounds_Z[0], state.y[2] > bounds_Z[1]]))
+        return jnp.any(jnp.array([R_out, Z_out]))
+
+    kwargs.setdefault(
+        "stepsize_controller", PIDController(rtol=rtol, atol=atol, dtmin=min_step_size)
+    )
+    kwargs.setdefault(
+        "discrete_terminating_event",
+        DiscreteTerminatingEvent(default_terminating_event_fxn),
+    )
+
+    term = ODETerm(odefun)
+    saveat = SaveAt(ts=ts)
+
+    intfun = lambda x, args: diffeqsolve(
+        term,
+        solver,
+        y0=x,
+        t0=ts[0],
+        t1=ts[-1],
+        saveat=saveat,
+        max_steps=maxstep * len(ts),
+        dt0=min_step_size,
+        args=args,
+        **kwargs,
+    ).ys
+
+    # suppress warnings till its fixed upstream:
+    # https://github.com/patrick-kidger/diffrax/issues/445
+    # also ignore deprecation warning for now until we actually need to deal with it
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="unhashable type")
+        warnings.filterwarnings("ignore", message="`diffrax.*discrete_terminating")
+        yt = jit(vmap(intfun))(y0, args)
+
+    yt = jnp.where(jnp.isinf(yt), jnp.nan, yt)
+
+    x = yt[:, :, :3]
+    v = yt[:, :, 3:]
+
+    return x, v
+
+
+def _guiding_center_vacuum(t, y, args, field_compute, basis):
+    # this is the one implemented in simsopt for method="gc_vac"
+    # should be equivalent to full lagrangian from Cary & Brizard in vacuum
+    m_over_q, mu = args
+    vpar = y[-1]
+    x = y[:-1]
+    B = field_compute(x)
+    dB = jnp.vectorize(
+        Derivative(
+            field_compute,
+            mode="fwd",
+        ),
+        signature="(n)->(n,n)",
+    )(x).squeeze()
+
+    modB = jnp.linalg.norm(B, axis=-1)
+    b = B / modB
+    grad_B = jnp.sum(b[:, None] * dB, axis=0)
+    if basis == "rpz":
+        g1, g2, g3 = grad_B
+        # factor of R from grad in cylindrical coordinates
+        g2 /= x[0]
+        grad_B = jnp.array([g1, g2, g3])
+
+    dRdt = vpar * b + (m_over_q / modB**2 * (mu * modB + vpar**2)) * cross(b, grad_B)
+    if basis == "rpz":
+        d1, d2, d3 = dRdt
+        d2 /= x[0]
+        dRdt = jnp.array([d1, d2, d3])
+
+    dvdt = -mu * dot(b, grad_B)
+    dxdt = jnp.append(dRdt, dvdt)
+    return dxdt.flatten()
+
+
+def _full_orbit(t, y, args, field_compute, basis):
+    q_over_m = args[0]
+    x, v = y[:3], y[3:]
+    B = field_compute(x)
+    dx = v
+    dv = q_over_m * cross(v, B)
+    return jnp.concatenate([dx, dv]).flatten()
+
+
+def _gc_radius(vperp, modB, m, q):
+    """Radius of guiding center orbit."""
+    return m * vperp / (jnp.abs(q) * modB)
+
+
+def _full_orbit_ic_from_gc(x0, vpar, vperp, B, eta, m, q):
+    modB = jnp.linalg.norm(B)
+    b = B / modB
+    # heavily borrowed from simsopt
+    # https://github.com/hiddenSymmetries/simsopt/blob/
+    # 3362805d306dff96de099da3c576850e1ec603f2/src/simsopt/field/tracing.py#L40
+
+    # construct 3 unit vectors, not necessarily orthogonal
+    # (but at least linearly independent)
+    p1 = b
+    # anything other than b
+    # note this is ok in rpz or xyz, since b shouldn't be purely in R or X directions
+    # (if it is, something else is probably wrong)
+    p2 = jnp.array([1, 0, 0])
+    p3 = -jnp.cross(p1, p2)  # some third vector not parallel to p1 or p2
+    p3 /= jnp.linalg.norm(p3)
+    # now do Gram-Schmidt to find orthogonal basis around B
+    q1 = p1  # b
+    q2 = p2 - dot(q1, p2) * q1
+    q2 /= jnp.linalg.norm(q2)
+    q3 = p3 - dot(q1, p3) * q1 - dot(q2, p3) * q2
+    q3 /= jnp.linalg.norm(q3)
+    r = _gc_radius(vperp, modB, m, q)
+
+    # transform from guiding center frame to particle frame
+    x0 = x0 + r * jnp.sin(eta) * q2 + r * jnp.cos(eta) * q3
+    v0 = vpar * q1 + vperp * (-jnp.cos(eta) * q2 + jnp.sin(eta) * q3)
+    return x0, v0
 
 
 class OmnigenousField(Optimizable, IOAble):
