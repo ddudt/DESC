@@ -3384,8 +3384,6 @@ class TestObjectiveNaNGrad:
     @pytest.mark.unit
     def test_objective_no_nangrad_quadratic_flux_minimizing(self):
         """SurfaceQuadraticFlux."""
-        ext_field = ToroidalMagneticField(1.0, 1.0)
-
         surf = FourierRZToroidalSurface(
             R_lmn=[4.0, 1.0],
             modes_R=[[0, 0], [1, 0]],
@@ -3394,10 +3392,19 @@ class TestObjectiveNaNGrad:
             NFP=1,
         )
 
-        obj = ObjectiveFunction(SurfaceQuadraticFlux(surf, ext_field), use_jit=False)
-        obj.build()
-        g = obj.grad(obj.x(surf, ext_field))
-        assert not np.any(np.isnan(g)), "quadratic flux"
+        def test(normal):
+            ext_field = FourierPlanarCoil(center=[0, 0, 3.0], normal=normal)
+            obj = ObjectiveFunction(
+                SurfaceQuadraticFlux(surf, ext_field), use_jit=False
+            )
+            obj.build()
+            g = obj.grad(obj.x(surf, ext_field))
+            assert not np.any(np.isnan(g)), "quadratic flux"
+
+        test([0, 0, 1])  # normal parallel to Z-axis
+        test([0, 0, -1])  # antiparallel
+        test([0, 1e-4, 1])  # nearly parallel
+        test([0, 1e-4, -1])  # nearly antiparallel
 
     @pytest.mark.unit
     def test_objective_no_nangrad_toroidal_flux(self):
