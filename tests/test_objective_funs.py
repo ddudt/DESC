@@ -1734,11 +1734,8 @@ class TestObjectiveFunction:
             num_pitch=num_pitch,
         )
         obj.build()
-        # TODO(#1094)
         np.testing.assert_allclose(
-            obj.compute(eq.params_dict),
-            grid.compress(data["effective ripple"]),
-            rtol=0.004,
+            obj.compute(eq.params_dict), grid.compress(data["effective ripple"])
         )
         obj = GammaC(
             eq,
