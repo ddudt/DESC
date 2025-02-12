@@ -260,6 +260,7 @@ class EffectiveRipple(_Objective):
         data = compute_fun(
             eq, "iota", params, constants["transforms"], constants["profiles"]
         )
+
         # TODO (#1034): Use old theta values as initial guess.
         theta = Bounce2D.compute_theta(
             eq,
@@ -284,6 +285,7 @@ class EffectiveRipple(_Objective):
             quad=constants["quad"],
             **self._hyperparam,
         )
+
         return constants["transforms"]["grid"].compress(data["effective ripple"])
 
     def _build_spline(self, use_jit=True, verbose=1):
@@ -330,6 +332,7 @@ class EffectiveRipple(_Objective):
             constants["transforms_1dr"],
             constants["profiles"],
         )
+
         grid = eq._get_rtz_grid(
             constants["rho"],
             constants["alpha"],
