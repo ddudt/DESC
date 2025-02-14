@@ -95,5 +95,6 @@ from .linear_objectives import (
     FixSumModesR,
     FixSumModesZ,
     FixThetaSFL,
+    ShareParameters,
 )
 from .objective_funs import ObjectiveFunction
