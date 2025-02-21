@@ -116,6 +116,16 @@ docs = {
 }
 
 
+#
+def worker(flat_obj, structure, op, vi, xi, queue):
+    """Worker function for multiprocessing."""
+    obj = jax.tree_util.tree_unflatten(structure, flat_obj)
+    # TODO: this is for debugging purposes, must be deleted before merging!
+    print(f"This should run on device id:{obj._device_id}")
+    Ji = getattr(obj, "jvp_" + op)(vi, xi)
+    queue.put((obj._device_id, Ji))
+
+
 def collect_docs(
     overwrite=None,
     target_default="",
@@ -488,7 +498,10 @@ class ObjectiveFunction(IOAble):
             f = pconcat(
                 [
                     obj.compute_unscaled(
-                        *jax.device_put(par, obj._device), constants=const
+                        *jax.device_put(
+                            par, jax.devices(desc_config["kind"])[obj._device_id]
+                        ),
+                        constants=const,
                     )
                     for par, obj, const in zip(params, self.objectives, constants)
                 ]
@@ -527,7 +540,10 @@ class ObjectiveFunction(IOAble):
             f = pconcat(
                 [
                     obj.compute_scaled(
-                        *jax.device_put(par, obj._device), constants=const
+                        *jax.device_put(
+                            par, jax.devices(desc_config["kind"])[obj._device_id]
+                        ),
+                        constants=const,
                     )
                     for par, obj, const in zip(params, self.objectives, constants)
                 ]
@@ -566,7 +582,10 @@ class ObjectiveFunction(IOAble):
             f = pconcat(
                 [
                     obj.compute_scaled_error(
-                        *jax.device_put(par, obj._device), constants=const
+                        *jax.device_put(
+                            par, jax.devices(desc_config["kind"])[obj._device_id]
+                        ),
+                        constants=const,
                     )
                     for par, obj, const in zip(params, self.objectives, constants)
                 ]
@@ -636,13 +655,19 @@ class ObjectiveFunction(IOAble):
                 params, params0, self.objectives, constants
             ):
                 if self._is_multi_device:  # pragma: no cover
-                    par = jax.device_put(par, obj._device)
-                    par0 = jax.device_put(par0, obj._device)
+                    par = jax.device_put(
+                        par, jax.devices(desc_config["kind"])[obj._device_id]
+                    )
+                    par0 = jax.device_put(
+                        par0, jax.devices(desc_config["kind"])[obj._device_id]
+                    )
                 obj.print_value(par, par0, constants=const)
         else:  # pragma: no cover
             for par, obj, const in zip(params, self.objectives, constants):
                 if self._is_multi_device:
-                    par = jax.device_put(par, obj._device)
+                    par = jax.device_put(
+                        par, jax.devices(desc_config["kind"])[obj._device_id]
+                    )
                 obj.print_value(par, constants=const)
         return None
 
@@ -764,21 +789,50 @@ class ObjectiveFunction(IOAble):
         # basic idea is we compute the jacobian of each objective wrt each thing
         # one by one, and assemble into big block matrix
         # if objective doesn't depend on a given thing, that part is set to 0.
-        for k, (obj, const) in enumerate(zip(self.objectives, constants)):
-            # TODO: this is for debugging purposes, must be deleted before merging!
-            if self._is_multi_device:
-                print(f"This should run on device id:{obj._device_id}")
-            # get the xs that go to that objective
-            thing_idx = self._things_per_objective_idx[k]
-            xi = [xs[i] for i in thing_idx]
-            vi = [vs[i] for i in thing_idx]
-            if self._is_multi_device:  # pragma: no cover
-                # inputs to jitted functions must live on the same device. Need to
-                # put xi and vi on the same device as the objective
-                xi = jax.device_put(xi, obj._device)
-                vi = jax.device_put(vi, obj._device)
-            Ji_ = getattr(obj, "jvp_" + op)(vi, xi, constants=const)
-            J += [Ji_]
+        if not self._is_multi_device:
+            for k, (obj, const) in enumerate(zip(self.objectives, constants)):
+                # get the xs that go to that objective
+                thing_idx = self._things_per_objective_idx[k]
+                xi = [xs[i] for i in thing_idx]
+                vi = [vs[i] for i in thing_idx]
+                Ji_ = getattr(obj, "jvp_" + op)(vi, xi, constants=const)
+                J += [Ji_]
+        else:  # pragma: no cover
+            import multiprocessing
+
+            # 'fork' is not compatible with JAX
+            multiprocessing.set_start_method("spawn", force=True)
+
+            processes = []
+            queue = multiprocessing.Queue()
+            # for testing first assume every objective lives on different device
+            for k, (obj, const) in enumerate(zip(self.objectives, constants)):
+                # flatten the objective to pass to the workers
+                flat_obj, structure = jax.tree_util.tree_flatten(obj)
+                # get the xs that go to that objective
+                thing_idx = self._things_per_objective_idx[k]
+                xi = [xs[i] for i in thing_idx]
+                vi = [vs[i] for i in thing_idx]
+                processes.append(
+                    multiprocessing.Process(
+                        target=worker,
+                        args=(flat_obj, structure, op, vi, xi, queue),
+                        name=f"Worker-{obj._device_id}",
+                    )
+                )
+            for p in processes:
+                p.start()
+
+            J = []
+            names = []
+            for _ in processes:
+                worker_name, Ji = queue.get()  # Blocks until a result is available
+                J.append(Ji)
+                names.append(worker_name)
+
+            for p in processes:
+                p.join()
+
         # this is the transpose of the jvp when v is a matrix, for consistency with
         # jvp_batched
         if not self._is_multi_device:
@@ -1155,10 +1209,6 @@ class _Objective(IOAble, ABC):
         # _device to a jaxlib.xla_extension.Device type, jit will throw error expecting
         # it to be static. So we set _device to None in that case which is simpler then
         # making it static.
-        if device_id != 0:
-            self._device = jax.devices(desc_config["kind"])[device_id]
-        else:
-            self._device = None
 
         self._target = target
         self._bounds = bounds

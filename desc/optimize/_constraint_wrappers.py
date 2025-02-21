@@ -4,6 +4,7 @@ import functools
 
 import numpy as np
 
+from desc import config as desc_config
 from desc.backend import jax, jit, jnp, pconcat
 from desc.batching import batched_vectorize
 from desc.objectives import (
@@ -1153,8 +1154,8 @@ def _proximal_jvp_blocked_pure(objective, vgs, xgs, op):
         if objective._is_multi_device:  # pragma: no cover
             # inputs to jitted functions must live on the same device. Need to
             # put xi and vi on the same device as the objective
-            xi = jax.device_put(xi, obj._device)
-            vi = jax.device_put(vi, obj._device)
+            xi = jax.device_put(xi, jax.devices(desc_config["kind"])[obj._device_id])
+            vi = jax.device_put(vi, jax.devices(desc_config["kind"])[obj._device_id])
         assert len(xi) > 0
         assert len(vi) > 0
         assert len(xi) == len(vi)

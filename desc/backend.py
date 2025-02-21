@@ -502,8 +502,11 @@ if use_jax:  # noqa: C901
 
         Decorates a method of a class with a dynamic device, allowing the method to be
         compiled with jax.jit for the specific device. This is needed since
-        @functools.partial(jax.jit, device=obj._device) is not
-        allowed in a class definition.
+        @functools.partial(
+            jax.jit,
+            device=jax.devices(desc_config["kind"])[obj._device_id]
+        )
+        is not allowed in a class definition.
 
         Parameters
         ----------
@@ -515,7 +518,9 @@ if use_jax:  # noqa: C901
         @functools.wraps(method)
         def wrapper(self, *args, **kwargs):
             # Compile the method with jax.jit for the specific device
-            wrapped = jax.jit(method, device=self._device)
+            wrapped = jax.jit(
+                method, device=jax.devices(desc_config["kind"])[self._device_id]
+            )
             return wrapped(self, *args, **kwargs)
 
         return wrapper

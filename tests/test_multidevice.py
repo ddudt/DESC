@@ -10,6 +10,7 @@ set_device(kind="cpu", num_device=num_device)
 import numpy as np
 import pytest
 
+from desc import config as desc_config
 from desc.backend import jax
 from desc.examples import get
 from desc.grid import LinearGrid
@@ -45,7 +46,9 @@ def test_multidevice_jac():
 
     for obj in [objective1, objective2, objective3, objective4]:
         obj.build()
-        obj = jax.device_put(obj, device=obj._device)
+        obj = jax.device_put(
+            obj, device=jax.devices(desc_config["kind"])[obj._device_id]
+        )
     objective1.things[0] = eq1
     objective2.things[0] = eq1
     objective3.things[0] = eq2
