@@ -34,8 +34,57 @@ from desc.integrals import compute_B_plasma
 from desc.io import IOAble
 from desc.optimizable import Optimizable, OptimizableCollection, optimizable_parameter
 from desc.transform import Transform
-from desc.utils import copy_coeffs, errorif, flatten_list, safediv, setdefault, warnif
+from desc.utils import (
+    copy_coeffs,
+    dot,
+    errorif,
+    flatten_list,
+    safediv,
+    setdefault,
+    warnif,
+)
 from desc.vmec_utils import ptolemy_identity_fwd, ptolemy_identity_rev
+
+
+def coulomb_general(re, rs, Bn, dS, chunk_size=None):
+    """1/4π ∫_∂D ∇G(x,x') Bn dS'.
+
+    Parameters
+    ----------
+    re : ndarray
+        Shape (n_eval_pts, 3).
+        Evaluation points to evaluate B at, in cartesian.
+    rs : ndarray
+        Shape (n_src_pts, 3).
+        Source points for current density J, in cartesian.
+    Bn : ndarray
+        Shape (n_src_pts, ).
+        Vector field dotted against surface normal.
+    dS : ndarray
+        Shape (n_src_pts, ).
+        Surface element at source points
+    chunk_size : int or None
+        Size to split computation into chunks of evaluation points.
+        If no chunking should be done or the chunk size is the full input
+        then supply ``None``. Default is ``None``.
+
+    Returns
+    -------
+    B : ndarray
+        Shape(n_eval_pts, 3).
+        Vector field in cartesian components at specified points.
+
+    """
+    BndS = (Bn * dS)[:, jnp.newaxis]
+    assert BndS.size == rs.shape[0]
+
+    def coulomb(re):
+        dr = re - rs
+        den = jnp.linalg.norm(dr, axis=-1, keepdims=True) ** 3
+        return safediv(BndS * dr, den).sum(axis=-2) / (4 * jnp.pi)
+
+    # It is more efficient to sum over the sources in batches of evaluation points.
+    return batch_map(coulomb, re[..., jnp.newaxis, :], chunk_size)
 
 
 def biot_savart_general(re, rs, J, dV=jnp.array([1.0]), chunk_size=None):
@@ -117,7 +166,7 @@ def biot_savart_general_vector_potential(
     assert JdV.shape == rs.shape
 
     def biot(re):
-        dr = rs - re
+        dr = rs - re  # -a
         den = jnp.linalg.norm(dr, axis=-1, keepdims=True)
         return safediv(JdV, den).sum(axis=-2) * mu_0 / (4 * jnp.pi)
 
@@ -341,7 +390,7 @@ class _MagneticField(IOAble, ABC):
             if None defaults to a LinearGrid with twice
             the surface poloidal and toroidal resolutions
             points are in surface angular coordinates i.e theta and zeta
-        source_grid : Grid, int or None
+        source_grid : Grid or int or None
             Grid used to discretize MagneticField object if calculating B from
             Biot-Savart. Should NOT include endpoint at 2pi.
         vc_source_grid : LinearGrid
@@ -393,7 +442,7 @@ class _MagneticField(IOAble, ABC):
             params=params,
             chunk_size=chunk_size,
         )
-        Bnorm = jnp.sum(B * surf_normal, axis=-1)
+        Bnorm = dot(B, surf_normal)
 
         if calc_Bplasma:
             Bplasma = compute_B_plasma(eq, eval_grid, vc_source_grid, normal_only=True)
